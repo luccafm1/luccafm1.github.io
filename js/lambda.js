@@ -24,39 +24,150 @@ let globalDefinitions = {
     'nil': 'λc.λn.n',
 } 
 
+function highlightLambdaSyntax(text, isDark = false) {
+    const parenInfo = new Array(text.length).fill(null);
+    const stack = [];
+    for (let j = 0; j < text.length; j++) {
+        if (text[j] === '(') {
+            parenInfo[j] = { status: 'ok', depth: stack.length };
+            stack.push(j);
+        } else if (text[j] === ')') {
+            if (stack.length > 0) {
+                stack.pop();
+                parenInfo[j] = { status: 'ok', depth: stack.length };
+            } else {
+                parenInfo[j] = { status: 'error', depth: 0 };
+            }
+        }
+    }
+    while (stack.length > 0) { parenInfo[stack.pop()].status = 'error'; }
+
+    const darkColors = {
+        bracket: ['#ffffff', '#00f2ff', '#39ff14', '#ff71ff', '#ff9d00'],
+        global: '#ffdc18', 
+        number: '#ffe818',
+        equal: '#ff00ff',
+        error: '#ff4d4d'
+    };
+
+    let html = '';
+    let i = 0;
+    while (i < text.length) {
+        const c = text[i];
+        if (c === 'λ' || c === '.') {
+            html += c;
+
+        } else if (c === '=') {
+            const color = isDark ? darkColors.equal : '#9b59b6'; 
+            html += `<span style="color: ${color}; font-weight: bold;">=</span>`;
+        } else if (c === '(' || c === ')') {
+            const info = parenInfo[i];
+            if (info.status === 'error') {
+                html += isDark ? `<span style="color:${darkColors.error}">${c}</span>` : `<span class="syntax-error">${c}</span>`;
+            } else {
+                const depth = info.depth % 5;
+                html += isDark ? `<span style="color:${darkColors.bracket[depth]}">${c}</span>` : `<span class="syntax-bracket-level-${depth}">${c}</span>`;
+            }
+        } else if (/\d/.test(c)) {
+            let num = '';
+            while (i < text.length && /\d/.test(text[i])) { num += text[i]; i++; }
+            html += isDark ? `<span style="color:${darkColors.number}">${num}</span>` : `<span class="syntax-number">${num}</span>`;
+            i--; 
+        } else if (/[a-zA-Z_]/.test(c) && c !== 'λ') {
+            let word = '';
+            while (i < text.length && /[a-zA-Z_0-9]/.test(text[i]) && text[i] !== 'λ') { word += text[i]; i++; }
+            const isGlobal = globalDefinitions[word];
+            
+            if (isGlobal) {
+                html += isDark ? `<span style="color:${darkColors.global}; font-style:italic">${word}</span>` : `<span class="syntax-global">${word}</span>`;
+            } else {
+                html += word;
+            }
+            i--; 
+        } else {
+            html += c === ' ' ? ' ' : c.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+        i++;
+    }
+    return html;
+}
+
 function listDefinitions() {
     const outputDiv = document.getElementById('definitions');  
     let content = `<div class='globals'>`;
         
     for (const [key, value] of Object.entries(globalDefinitions)) {
         content += `<div class='definition'>
-                        <div class='key-definition'><strong>${key}</strong></div> <div class='value-definition'>${value}</div>
+                        <div class='key-definition'><strong>${key}</strong></div> 
+                        <div class='value-definition'>${highlightLambdaSyntax(value, true)}</div>
                     </div>`;
     }
+
     content += `</div>
-                <textarea id="global-input" style="overflow:hidden" class="global-input" placeholder="Enter new definition or replace an existing one (e.g., 'add = λm.λn.λf.λx.((m f) ((n f) x))')"></textarea>
-                <button id="add-definition-button">Add Definition</button>`;
+                <div class="editor-wrapper">
+                    <div id="global-highlight-layer" class="highlight-layer" style="grid-area: 1/1; min-height: 45px;"></div>
+                    <textarea id="global-input" class="highlight-layer" spellcheck="false" placeholder="name = λexpression" 
+                        style="grid-area: 1/1; min-height: 45px; color: transparent; background: transparent; caret-color: black; outline: none; z-index: 2; border: 1px solid #ccc; pointer-events: auto;"></textarea>
+                </div>
+                <button id="add-definition-button" style="width: 80%; margin: 10px auto; display: block;">Add Definition</button>`;
     
     outputDiv.innerHTML = content;
     
     document.getElementById('add-definition-button').addEventListener('click', addDefinition);
 
     const textarea = document.getElementById('global-input');
-    textarea.addEventListener("input", () => {
+    const highlightLayer = document.getElementById('global-highlight-layer');
+
+    const updateGlobalEditor = () => {
+        let text = textarea.value;
         const cursorPosition = textarea.selectionStart;
-        const beforeCursor = textarea.value.slice(0, cursorPosition);
-        const afterCursor = textarea.value.slice(cursorPosition);
 
-        const updatedBeforeCursor = beforeCursor.replace(/\blambda\b|\\/g, 'λ');
-        const updatedText = updatedBeforeCursor + afterCursor;
-
-        const adjustment = beforeCursor.length - updatedBeforeCursor.length;
-
-        if (updatedText !== textarea.value) {
+        const updatedText = text.replace(/\blambda\b|\\/g, 'λ');
+        if (updatedText !== text) {
+            const adjustment = text.length - updatedText.length;
             textarea.value = updatedText;
             textarea.setSelectionRange(cursorPosition - adjustment, cursorPosition - adjustment);
+            text = updatedText;
+        }
+
+        highlightLayer.innerHTML = highlightLambdaSyntax(text, false);
+    };
+
+    textarea.addEventListener('keydown', function(e) {
+        if (e.key === '(') {
+            e.preventDefault(); 
+            const start = this.selectionStart;
+            const end = this.selectionEnd;
+            const text = this.value;
+            
+            if (start !== end) {
+                const selectedText = text.substring(start, end);
+                this.value = text.substring(0, start) + '(' + selectedText + ')' + text.substring(end);
+                this.selectionStart = start + 1;
+                this.selectionEnd = end + 1;
+            } else {
+                const nextChar = text[start];
+                const shouldAutoClose = !nextChar || /[\s)]/.test(nextChar);
+                
+                if (shouldAutoClose) {
+                    this.value = text.substring(0, start) + '()' + text.substring(end);
+                    this.selectionStart = this.selectionEnd = start + 1;
+                } else {
+                    this.value = text.substring(0, start) + '(' + text.substring(end);
+                    this.selectionStart = this.selectionEnd = start + 1;
+                }
+            }
+            updateGlobalEditor(); 
         }
     });
+
+    textarea.addEventListener("input", updateGlobalEditor);
+    textarea.addEventListener('scroll', () => {
+        highlightLayer.scrollTop = textarea.scrollTop;
+        highlightLayer.scrollLeft = textarea.scrollLeft;
+    });
+
+    updateGlobalEditor();
 }
 
 function addDefinition() {
