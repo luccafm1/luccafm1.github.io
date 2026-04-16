@@ -622,3 +622,29 @@ button:hover {
 .syntax-bracket-level-2, .bracket-level-2 { color: #009688; font-weight: bold; } /* Teal */
 .syntax-bracket-level-3, .bracket-level-3 { color: #e91e63; font-weight: bold; } /* Pink */
 .syntax-bracket-level-4, .bracket-level-4 { color: #ff9800; font-weight: bold; } /* Orange */
+
+
+.final-result-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.decimal-badge {
+    background-color: #f0fdf4; /* Soft green */
+    color: #166534;
+    border: 1px solid #bbf7d0;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.9em;
+    font-family: sans-serif;
+    margin-bottom: -15px; /* Pulls it closer to the math */
+    z-index: 10;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+/* Ensure the final result has some breathing room for the badge */
+.final-result {
+    padding-top: 25px;
+}

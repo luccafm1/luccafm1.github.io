@@ -691,15 +691,26 @@ function evaluateExpression() {
     function showFinalResult(stepsArray, finalTerm) {
         outputDiv.innerHTML = '';
         
+        const resultContainer = document.createElement('div');
+        resultContainer.className = 'final-result-container'; 
+
+        const decimalValue = churchToNum(finalTerm);
+        if (decimalValue !== null) {
+            const badge = document.createElement('div');
+            badge.className = 'decimal-badge';
+            badge.innerHTML = `<strong>${decimalValue}</strong>`;
+            resultContainer.appendChild(badge);
+        }
+
         const resultDiv = document.createElement('div');
         resultDiv.className = 'final-result';
-        
         resultDiv.innerHTML = toHTML(finalTerm, null, null, 0, false); 
-        outputDiv.appendChild(resultDiv);
+        resultContainer.appendChild(resultDiv);
+        
+        outputDiv.appendChild(resultContainer);
         
         const showBtn = document.createElement('button');
         showBtn.textContent = 'Show Evaluation Steps';
-
         showBtn.onclick = () => renderStepsUI(stepsArray, finalTerm);
         
         outputDiv.appendChild(document.createElement('br'));
@@ -759,6 +770,36 @@ function numToChurch(num) {
     return new Expression(f, new Expression(x, body));
 }
 
+function churchToNum(term) {
+    // 1. Must be an abstraction: λf.body
+    if (!(term instanceof Expression)) return null;
+    const f = term.variable.name;
+    
+    // 2. Body must be an abstraction: λx.innerBody
+    if (!(term.body instanceof Expression)) return null;
+    const x = term.body.variable.name;
+    
+    let current = term.body.body;
+    let count = 0;
+
+    // 3. Traverse the applications: (f (f (f x)))
+    while (current instanceof Application) {
+        // The function being applied must be the first bound variable (f)
+        if (!(current.function instanceof Variable) || current.function.name !== f) {
+            return null;
+        }
+        current = current.argument;
+        count++;
+    }
+
+    // 4. The final innermost atom must be the second bound variable (x)
+    if (current instanceof Variable && current.name === x) {
+        return count;
+    }
+
+    return null;
+}
+
 
 
 
@@ -787,14 +828,21 @@ function toHTML(term, targetRedex = null, boundVarToHighlight = null, depth = 0,
         const varName = func.variable.name;
         
         const paramHtml = `<span class="highlight-param">${varName}</span>`;
-        // Pass showChanged through recursion
         const bodyHtml = toHTML(func.body, null, varName, depth + 1, showChanged); 
-        const funcHtml = `<span class="${levelClass}">(</span>λ${paramHtml}.${bodyHtml}<span class="${levelClass}">)</span>`;
         
+        let funcHtml = `<span class="${levelClass}">(</span>λ${paramHtml}.${bodyHtml}<span class="${levelClass}">)</span>`;
+        if (func._isNew && showChanged) {
+            funcHtml = `<span class="highlight-changed">${funcHtml}</span>`;
+        }
+
         const argHtmlInner = toHTML(arg, null, null, depth + 1, showChanged); 
-        const argHtml = (arg instanceof Application || arg instanceof Expression) ? 
+        let argHtml = (arg instanceof Application || arg instanceof Expression) ? 
             `<span class="${levelClass}">(</span><span class="highlight-arg">${argHtmlInner}</span><span class="${levelClass}">)</span>` : 
             `<span class="highlight-arg">${argHtmlInner}</span>`;
+
+        if (arg._isNew && showChanged) {
+            argHtml = `<span class="highlight-changed">${argHtml}</span>`;
+        }
         
         resultHTML = `<span class="redex-wrapper">${funcHtml} ${argHtml}</span>`;
     } else if (term instanceof Variable) {
@@ -812,7 +860,6 @@ function toHTML(term, targetRedex = null, boundVarToHighlight = null, depth = 0,
         resultHTML = `${funcStr} ${argStr}`;
     }
 
-    // NEW CONDITION: Only wrap in green if showChanged is true
     if (term._isNew && showChanged) {
         return `<span class="highlight-changed">${resultHTML}</span>`;
     }
