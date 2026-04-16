@@ -28,6 +28,7 @@
             });
         });
     </script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
 </head>
 <body>
     <div class="menu">
@@ -41,10 +42,18 @@
 
         <div class="input-section">
             <h3>Input Expression</h3>
-            <textarea id="input" style="overflow:hidden" placeholder="Enter expression (e.g., 'add 1 2' or 'λx.x')"></textarea>
-            <button onclick="evaluateExpression()">Evaluate</button>
-            <button onclick="showExpanded()">Show Expanded Form</button>
-            <button onclick="showSyntaxTree()">Show Syntax Tree</button>
+            
+            <div class="editor-wrapper">
+                <div id="highlight-layer" class="highlight-layer"></div>
+                <textarea id="input" spellcheck="false" placeholder="Enter expression (e.g., 'add 1 2' or 'λx.x')"></textarea>
+            </div>
+            
+            <div class="button-group">
+                <button onclick="evaluateExpression()">Evaluate</button>
+                <button onclick="showExpanded()">Expand</button>
+                <button onclick="showSyntaxTree()">Syntax Tree</button>
+            </div>
+            
             <div id="error" class="error"></div>
         </div>
 

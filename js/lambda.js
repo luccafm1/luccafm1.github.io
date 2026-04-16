@@ -72,6 +72,11 @@ function addDefinition() {
 
     document.getElementById('global-input').value = '';
     listDefinitions();
+    
+    const mainEditor = document.getElementById('input');
+    if (mainEditor) {
+        mainEditor.dispatchEvent(new Event('input'));
+    }
 }
 
 window.onload = listDefinitions;
@@ -132,7 +137,13 @@ function tokenize(str) {
             tokens.push({ type: 'symbol', value: c });
             i++;
         } else if (/\s/.test(c)) {
-            i++;
+            // NEW: Capture the exact whitespace
+            let space = '';
+            while (i < str.length && /\s/.test(str[i])) {
+                space += str[i];
+                i++;
+            }
+            tokens.push({ type: 'whitespace', value: space });
         } else if (/\d/.test(c)) {
             let num = '';
             while (i < str.length && /\d/.test(str[i])) {
@@ -142,7 +153,7 @@ function tokenize(str) {
             tokens.push({ type: 'number', value: num });
         } else {
             let varName = '';
-            while (i < str.length && !['λ', '.', '(', ')', ' '].includes(str[i])) {
+            while (i < str.length && !['λ', '.', '(', ')', ' '].includes(str[i]) && !/\s/.test(str[i])) {
                 varName += str[i];
                 i++;
             }
@@ -152,10 +163,9 @@ function tokenize(str) {
     return tokens;
 }
 
-
 class Parser {
     constructor(tokens) {
-        this.tokens = tokens;
+        this.tokens = tokens.filter(t => t.type !== 'whitespace');
         this.pos = 0;
     }
 
@@ -269,11 +279,16 @@ function freshVariableName(base = 'x') {
 
 function substitute(term, variable, replacement) {
     if (term instanceof Variable) {
-        return term.name === variable.name ? replacement : term;
+        if (term.name === variable.name) {
+            const injectedTerm = cloneTerm(replacement);
+            injectedTerm._isNew = true; 
+            return injectedTerm;
+        }
+        return term;
     } else if (term instanceof Expression) {
         if (term.variable.name === variable.name) {
             return term;
-        } else if (freeVariables(replacement).has(term.variable.name)) {
+        } else if (freeVariables(replacement).has(term.variable.name) && freeVariables(term.body).has(variable.name)) {
             const newVarName = freshVariableName();
             const newVar = new Variable(newVarName);
             let newBody = substitute(term.body, term.variable, newVar);
@@ -298,55 +313,169 @@ function parse(str) {
     return parser.parse();
 }
 
-function expandSimpleSyntax(input) {
+function expandSimpleSyntax(input, forDisplay = false, depth = 0) {
     const tokens = tokenize(input);
     const expandingTokens = new Set();
 
     function expandToken(tokenObj) {
         const { type, value } = tokenObj;
-        if (type === 'variable' && globalDefinitions[value]) {
+        
+        // Pass whitespace through exactly as it was typed
+        if (type === 'whitespace') return value;
+
+        let expandedDef = null;
+        let origin = value;
+
+        if (type === 'number') {
+            const num = parseInt(value, 10);
+            let body = 'x';
+            for (let i = 0; i < num; i++) { body = `(f ${body})`; }
+            expandedDef = `(λf.λx.${body})`;
+        } else if (type === 'variable' && globalDefinitions[value]) {
             if (expandingTokens.has(value)) {
                 throw new Error(`Circular definition detected for token '${value}'`);
             }
             expandingTokens.add(value);
-            let expandedDef = expandDefinition(globalDefinitions[value]);
+            expandedDef = expandDefinition(globalDefinitions[value], depth + 1);
             expandingTokens.delete(value);
-            return expandedDef;
-        } else {
-            return value;
         }
+
+        if (expandedDef && forDisplay) {
+            try {
+                const termObj = parse(expandedDef);
+                const beautifulTerm = toHTML(termObj, null, null, depth);
+                return `<span class="highlight-expanded-group">` +
+                            `<span class="expanded-origin">${origin}</span>` +
+                            `<span class="expanded-term">${beautifulTerm}</span>` +
+                       `</span>`;
+            } catch (e) {
+                return expandedDef;
+            }
+        }
+        return expandedDef || value;
     }
 
-    function expandDefinition(definition) {
+    function expandDefinition(definition, d) {
         const trimmedDef = definition.trim();
         const startsWithLambda = trimmedDef.startsWith('λ');
-
-        const defTokens = tokenize(definition);
-        const expanded = defTokens.map(expandToken).join(' ');
-
+        const expanded = expandSimpleSyntax(definition, forDisplay, d);
         return startsWithLambda ? `(${expanded})` : expanded;
     }
 
-    const expandedTokens = tokens.map(expandToken);
-    return expandedTokens.join(' ');
+    // Join with NO extra spaces
+    return tokens.map(expandToken).join('');
 }
-
-
-
 
 function showExpanded() {
     const input = document.getElementById('input').value;
     const outputDiv = document.getElementById('output');
+    const errorDiv = document.getElementById('error');
     
     try {
-        outputDiv.textContent = '';
-        outputDiv.style.textAlign = 'center';
-        const expanded = expandSimpleSyntax(input);
-        outputDiv.textContent = expanded;
-        outputDiv.style.display = 'block';
+        errorDiv.textContent = '';
+        outputDiv.innerHTML = '';
+        outputDiv.style.textAlign = 'left';
+
+        const expandedHTML = expandSimpleSyntax(input, true, 0);
+
+        outputDiv.style.textAlign = 'left'; 
+        const resultDiv = document.createElement('div');
+        resultDiv.className = 'final-result';
+        resultDiv.style.textAlign = 'left'; // Explicitly set inside the box
+        resultDiv.innerHTML = expandSimpleSyntax(input, true, 0);
+        outputDiv.appendChild(resultDiv);
     } catch (error) {
-        document.getElementById('error').textContent = `Error: ${error.message}`;
+        errorDiv.textContent = `Error: ${error.message}`;
+        outputDiv.textContent = '';
     }
+}
+
+
+function getD3TreeData(term) {
+    if (term instanceof Variable) {
+        return { name: term.name, type: 'variable' };
+    } else if (term instanceof Expression) {
+        return { 
+            name: `λ${term.variable.name}`, 
+            type: 'lambda',
+            children: [ getD3TreeData(term.body) ]
+        };
+    } else if (term instanceof Application) {
+        return { 
+            name: '@', 
+            type: 'application',
+            children: [ 
+                getD3TreeData(term.function), 
+                getD3TreeData(term.argument) 
+            ]
+        };
+    }
+    return { name: 'Unknown' };
+}
+
+function drawD3Tree(treeData, containerId) {
+    const container = d3.select(containerId);
+    container.selectAll("*").remove(); 
+
+    const width = container.node().getBoundingClientRect().width || 800;
+    const height = 500;
+    const margin = {top: 40, right: 90, bottom: 50, left: 90};
+
+    const svg = container.append("svg")
+        .attr("width", width)
+        .attr("height", height)
+        .call(d3.zoom().on("zoom", (event) => {
+            svgGroup.attr("transform", event.transform);
+        }))
+        .append("g")
+        .attr("transform", `translate(${width / 2},${margin.top})`); 
+
+    const svgGroup = svg; 
+
+    const treemap = d3.tree().nodeSize([60, 80]); 
+
+    let root = d3.hierarchy(treeData, d => d.children);
+    root.x0 = 0;
+    root.y0 = 0;
+
+    const treeDataCalculated = treemap(root);
+    const nodes = treeDataCalculated.descendants();
+    const links = treeDataCalculated.descendants().slice(1);
+
+    svgGroup.selectAll(".link")
+        .data(links)
+        .enter().append("path")
+        .attr("class", "tree-link")
+        .attr("d", d => {
+            return `M${d.x},${d.y}
+                    C${d.x},${(d.y + d.parent.y) / 2}
+                     ${d.parent.x},${(d.y + d.parent.y) / 2}
+                     ${d.parent.x},${d.parent.y}`;
+        });
+
+    const node = svgGroup.selectAll(".node")
+        .data(nodes)
+        .enter().append("g")
+        .attr("class", d => `tree-node tree-node-${d.data.type}`)
+        .attr("transform", d => `translate(${d.x},${d.y})`);
+
+    const defs = svg.append("defs");
+    const filter = defs.append("filter").attr("id", "drop-shadow");
+    filter.append("feGaussianBlur").attr("in", "SourceAlpha").attr("stdDeviation", 3);
+    filter.append("feOffset").attr("dx", 0).attr("dy", 2);
+    filter.append("feComponentTransfer").append("feFuncA").attr("type", "linear").attr("slope", 0.3);
+    const merge = filter.append("feMerge");
+    merge.append("feMergeNode");
+    merge.append("feMergeNode").attr("in", "SourceGraphic");
+
+    node.append("circle")
+        .attr("r", 18)
+        .style("filter", "url(#drop-shadow)");
+
+    node.append("text")
+        .attr("dy", ".35em")
+        .attr("text-anchor", "middle")
+        .text(d => d.data.name);
 }
 
 function showSyntaxTree() {
@@ -356,13 +485,22 @@ function showSyntaxTree() {
 
     try {
         errorDiv.textContent = '';
+        outputDiv.innerHTML = '';
+
         outputDiv.style.textAlign = 'left'; 
 
         const expressionToParse = expandSimpleSyntax(input);
         const term = parse(expressionToParse);
-        const syntaxTree = getSyntaxTree(term);
+        const treeData = getD3TreeData(term);
 
-        outputDiv.innerHTML = `${syntaxTree}`; 
+        const treeDiv = document.createElement('div');
+        treeDiv.id = 'd3-tree-container';
+        treeDiv.className = 'ast-full-view'; 
+        
+        outputDiv.appendChild(treeDiv);
+
+        drawD3Tree(treeData, "#d3-tree-container");
+
     } catch (error) {
         errorDiv.textContent = `Error: ${error.message}`;
         outputDiv.textContent = '';
@@ -387,26 +525,70 @@ function getSyntaxTree(term, indent = '', isLast = true) {
     return treeStructure;
 }
 
+function clearNewTags(term) {
+    if (!term) return;
+    term._isNew = false;
+    if (term instanceof Expression) clearNewTags(term.body);
+    if (term instanceof Application) {
+        clearNewTags(term.function);
+        clearNewTags(term.argument);
+    }
+}
 
-function evaluate(term, maxSteps=1000) {
-    let previousTerm = null;
+function evaluate(term, maxSteps = 10000) {
     let currentTerm = term;
     let step_count = 0;
     const steps = [];
     
-    while (previousTerm === null || currentTerm.toString() !== previousTerm.toString()) {
-        if (step_count >= maxSteps){
-            return steps.slice(Math.max(steps.length-10, 0)).concat(["Recursion limit reached"]);
+    while (true) {
+        const redex = findNextRedex(currentTerm);
+        
+        let noteHtml = "Normal Form Reached";
+        if (redex) {
+            const varName = redex.function.variable.name;
+            const argStr = redex.argument.toString(); 
+            noteHtml = `Beta reduction: Substitute <span class="highlight-arg-note">${argStr}</span> for <span class="highlight-param-note">${varName}</span>`;
         }
-        steps.push(currentTerm.toString());
-        previousTerm = currentTerm;
-        currentTerm = reduce(currentTerm);
+
+        steps.push({
+            html: toHTML(currentTerm, redex),
+            text: currentTerm.toString(),
+            note: noteHtml
+        });
+
+        if (!redex) break; 
+        
+        if (step_count >= maxSteps){
+            steps.push({ 
+                html: currentTerm.toString(), 
+                text: currentTerm.toString(), 
+                note: "<span style='color:red'>Recursion limit reached</span>" 
+            });
+            break;
+        }
+
+        clearNewTags(currentTerm);
+
+        const nextTerm = reduce(currentTerm);
+        if (nextTerm.toString() === currentTerm.toString()) break; 
+
+        currentTerm = nextTerm;
         step_count++;
     }
 
-    return steps;
+    return { steps, finalTerm: currentTerm };
 }
 
+function cloneTerm(term) {
+    if (term instanceof Variable) {
+        return new Variable(term.name);
+    } else if (term instanceof Expression) {
+        return new Expression(new Variable(term.variable.name), cloneTerm(term.body));
+    } else if (term instanceof Application) {
+        return new Application(cloneTerm(term.function), cloneTerm(term.argument));
+    }
+    throw new Error("Unknown term type in cloneTerm");
+}
 
 function reduce(term) {
     if (term instanceof Application) {
@@ -464,44 +646,79 @@ function reduce(term) {
 
 function evaluateExpression() {
     counter = 0;
-    
     const input = document.getElementById('input').value;
     const outputDiv = document.getElementById('output');
     const errorDiv = document.getElementById('error');
-    const expandedDiv = document.getElementById('expanded');
 
-    function evaluateSteps(result) {
-        outputDiv.textContent = '';
-        result.forEach((step, _) => {
-            outputDiv.innerHTML += `<div class="step">${step}</div><br>`;
+    function renderStepsUI(stepsArray, finalTerm) {
+        outputDiv.innerHTML = '';
+        const container = document.createElement('div');
+        container.className = 'steps-container';
+
+        stepsArray.forEach((step, index) => {
+            const stepDiv = document.createElement('div');
+            stepDiv.className = 'step-row';
+            stepDiv.innerHTML = `
+                <div class="step-number">${index + 1}</div>
+                <div class="step-content"><div class="step-math">${step.html}</div></div>
+            `;
+            container.appendChild(stepDiv);
+
+            if (index < stepsArray.length - 1) {
+                const arrowDiv = document.createElement('div');
+                arrowDiv.className = 'transition-arrow';
+                arrowDiv.innerHTML = `
+                    <div class="arrow-graphic">
+                        <div class="arrow-line"></div>
+                        <div class="arrow-symbol">${step.note.includes("Beta") ? "β" : "↓"}</div>
+                        <div class="arrow-head">▼</div>
+                    </div>
+                    <div class="arrow-note">${step.note}</div>
+                `;
+                container.appendChild(arrowDiv);
+            }
         });
-        outputDiv.innerHTML += `<button id="hide-steps">Hide Evaluation Steps</button>`;
-        document.getElementById('hide-steps').addEventListener('click', hideSteps);
 
-        function hideSteps() {
-            outputDiv.textContent = ''; 
-            outputDiv.innerHTML = result[result.length - 1];
-            outputDiv.innerHTML += `<br><button id="steps">Show Evaluation Steps</button>`;
-            document.getElementById('steps').addEventListener('click', () => evaluateSteps(result));
-        }
+        outputDiv.appendChild(container);
+        
+        const hideBtn = document.createElement('button');
+        hideBtn.textContent = 'Hide Evaluation Steps';
+
+        hideBtn.onclick = () => showFinalResult(stepsArray, finalTerm);
+        outputDiv.appendChild(hideBtn);
+    }
+
+    function showFinalResult(stepsArray, finalTerm) {
+        outputDiv.innerHTML = '';
+        
+        const resultDiv = document.createElement('div');
+        resultDiv.className = 'final-result';
+        
+        resultDiv.innerHTML = toHTML(finalTerm, null, null, 0, false); 
+        outputDiv.appendChild(resultDiv);
+        
+        const showBtn = document.createElement('button');
+        showBtn.textContent = 'Show Evaluation Steps';
+
+        showBtn.onclick = () => renderStepsUI(stepsArray, finalTerm);
+        
+        outputDiv.appendChild(document.createElement('br'));
+        outputDiv.appendChild(showBtn);
     }
 
     try {
         errorDiv.textContent = '';
-        outputDiv.textContent = '';
-        expandedDiv.style.display = 'none';
         outputDiv.style.textAlign = 'center';
 
         let expressionToEvaluate = expandSimpleSyntax(input);
-
         const term = parse(expressionToEvaluate);
-        const result = evaluate(term);
-        outputDiv.innerHTML = result[result.length - 1];
-        outputDiv.innerHTML += `<br><br><button id="steps">Show Evaluation Steps</button>`;
-        document.getElementById('steps').addEventListener('click', () => evaluateSteps(result));
-
+        
+        // Capture both from the evaluate result
+        const { steps, finalTerm } = evaluate(term);
+        
+        showFinalResult(steps, finalTerm);
     } catch (error) {
-        errorDiv.textContent = `${error.message}`;
+        errorDiv.textContent = `Error: ${error.message}`;
         outputDiv.textContent = '';
     }
 }
@@ -541,3 +758,219 @@ function numToChurch(num) {
     }
     return new Expression(f, new Expression(x, body));
 }
+
+
+
+
+function findNextRedex(term) {
+    if (term instanceof Application) {
+        if (term.function instanceof Expression) {
+            return term; 
+        }
+        const leftSearch = findNextRedex(term.function);
+        if (leftSearch) return leftSearch;
+        
+        return findNextRedex(term.argument);
+    } else if (term instanceof Expression) {
+        return findNextRedex(term.body);
+    }
+    return null;
+}
+
+function toHTML(term, targetRedex = null, boundVarToHighlight = null, depth = 0, showChanged = true) {
+    const levelClass = `bracket-level-${depth % 5}`;
+    let resultHTML = "";
+
+    if (term === targetRedex) {
+        const func = term.function;
+        const arg = term.argument;
+        const varName = func.variable.name;
+        
+        const paramHtml = `<span class="highlight-param">${varName}</span>`;
+        // Pass showChanged through recursion
+        const bodyHtml = toHTML(func.body, null, varName, depth + 1, showChanged); 
+        const funcHtml = `<span class="${levelClass}">(</span>λ${paramHtml}.${bodyHtml}<span class="${levelClass}">)</span>`;
+        
+        const argHtmlInner = toHTML(arg, null, null, depth + 1, showChanged); 
+        const argHtml = (arg instanceof Application || arg instanceof Expression) ? 
+            `<span class="${levelClass}">(</span><span class="highlight-arg">${argHtmlInner}</span><span class="${levelClass}">)</span>` : 
+            `<span class="highlight-arg">${argHtmlInner}</span>`;
+        
+        resultHTML = `<span class="redex-wrapper">${funcHtml} ${argHtml}</span>`;
+    } else if (term instanceof Variable) {
+        resultHTML = term.name === boundVarToHighlight ? `<span class="highlight-bound">${term.name}</span>` : term.name;
+    } else if (term instanceof Expression) {
+        const nextBoundVar = (term.variable.name === boundVarToHighlight) ? null : boundVarToHighlight;
+        resultHTML = `λ${term.variable.name}.${toHTML(term.body, targetRedex, nextBoundVar, depth, showChanged)}`;
+    } else if (term instanceof Application) {
+        const funcStr = term.function instanceof Expression ? 
+            `<span class="${levelClass}">(</span>${toHTML(term.function, targetRedex, boundVarToHighlight, depth + 1, showChanged)}<span class="${levelClass}">)</span>` : 
+            toHTML(term.function, targetRedex, boundVarToHighlight, depth, showChanged);
+        const argStr = (term.argument instanceof Application || term.argument instanceof Expression) ? 
+            `<span class="${levelClass}">(</span>${toHTML(term.argument, targetRedex, boundVarToHighlight, depth + 1, showChanged)}<span class="${levelClass}">)</span>` : 
+            toHTML(term.argument, targetRedex, boundVarToHighlight, depth, showChanged);
+        resultHTML = `${funcStr} ${argStr}`;
+    }
+
+    // NEW CONDITION: Only wrap in green if showChanged is true
+    if (term._isNew && showChanged) {
+        return `<span class="highlight-changed">${resultHTML}</span>`;
+    }
+    
+    return resultHTML;
+}
+
+function getReductionInfo(term) {
+    if (term instanceof Application && term.function instanceof Expression) {
+        return { type: 'Beta Reduction', redex: term };
+    }
+    return { type: 'Normal Form Reached', redex: null };
+}
+
+
+function toDisplayFormat(term, highlights = {}, isIntermediateParameter = false) {
+    if (term instanceof Variable) {
+        const cls = isIntermediateParameter ? 'parameter highlight parameter-visual' : 'variable highlight variable-visual';
+        return highlights[term.name] ? `<span class='${cls}'>${term.name}</span>` : term.name;
+    } else if (term instanceof Expression) {
+        const paramStr = toDisplayFormat(term.variable, highlights, isIntermediateParameter);
+        const bodyStr = toDisplayFormat(term.body, highlights);
+        return `λ${paramStr}.${bodyStr}`;
+    } else if (term instanceof Application) {
+        const funcStr = term.function instanceof Expression ? `(${toDisplayFormat(term.function, highlights)})` : toDisplayFormat(term.function, highlights);
+        const argStr = (term.argument instanceof Application || term.argument instanceof Expression) ? `(${toDisplayFormat(term.argument, highlights)})` : toDisplayFormat(term.argument, highlights);
+        const highlightedArgStr = `<span class='argument highlight argument-visual'>${argStr}</span>`;
+        return `${funcStr} ${highlightedArgStr}`;
+    }
+}
+
+// --- INLINE SYNTAX HIGHLIGHTER & AUTO-PARENTHESES ---
+
+document.addEventListener("DOMContentLoaded", () => {
+    const textarea = document.getElementById('input');
+    const highlightLayer = document.getElementById('highlight-layer');
+
+    function updateEditor() {
+        let text = textarea.value;
+
+        // 1. Lambda auto-replace
+        const cursorPosition = textarea.selectionStart;
+        const beforeCursor = text.slice(0, cursorPosition);
+        const afterCursor = text.slice(cursorPosition);
+        const updatedBeforeCursor = beforeCursor.replace(/\blambda\b|\\/g, 'λ');
+        const updatedText = updatedBeforeCursor + afterCursor;
+        const adjustment = beforeCursor.length - updatedBeforeCursor.length;
+
+        if (updatedText !== text) {
+            textarea.value = updatedText;
+            textarea.setSelectionRange(cursorPosition - adjustment, cursorPosition - adjustment);
+            text = updatedText;
+        }
+
+        // --- RAINBOW BRACKET PRE-PASS ---
+        const parenInfo = new Array(text.length).fill(null);
+        const stack = [];
+        
+        for (let j = 0; j < text.length; j++) {
+            if (text[j] === '(') {
+                // Store depth BEFORE pushing (starts at 0)
+                parenInfo[j] = { status: 'ok', depth: stack.length };
+                stack.push(j);
+            } else if (text[j] === ')') {
+                if (stack.length > 0) {
+                    stack.pop();
+                    // Depth is the size of the stack AFTER popping to match the pair
+                    parenInfo[j] = { status: 'ok', depth: stack.length };
+                } else {
+                    parenInfo[j] = { status: 'error', depth: 0 };
+                }
+            }
+        }
+        while (stack.length > 0) {
+            parenInfo[stack.pop()].status = 'error';
+        }
+
+        // 2. Generate HTML
+        let html = '';
+        let i = 0;
+        while (i < text.length) {
+            const c = text[i];
+            if (c === 'λ') {
+                html += '<span class="syntax-lambda">λ</span>';
+            } else if (c === '.') {
+                html += '<span class="syntax-dot">.</span>';
+            } else if (c === '(' || c === ')') {
+                const info = parenInfo[i];
+                if (info.status === 'error') {
+                    html += `<span class="syntax-error">${c}</span>`;
+                } else {
+                    // Cycle through 5 levels of colors
+                    const level = info.depth % 5;
+                    html += `<span class="syntax-bracket-level-${level}">${c}</span>`;
+                }
+            } else if (/\d/.test(c)) {
+                let num = '';
+                while (i < text.length && /\d/.test(text[i])) { num += text[i]; i++; }
+                html += `<span class="syntax-number">${num}</span>`;
+                i--; 
+            } else if (/[a-zA-Z_]/.test(c) && c !== 'λ') {
+                let word = '';
+                while (i < text.length && /[a-zA-Z_0-9]/.test(text[i]) && text[i] !== 'λ') { word += text[i]; i++; }
+                const cls = globalDefinitions[word] ? "syntax-global" : "syntax-variable";
+                html += `<span class="${cls}">${word}</span>`;
+                i--; 
+            } else if (c === ' ') {
+                html += ' ';
+            } else {
+                html += c.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            }
+            i++;
+        }
+        if (text.endsWith('\n')) html += '<br>';
+        highlightLayer.innerHTML = html;
+    }
+
+    textarea.addEventListener('keydown', function(e) {
+        if (e.key === '(') {
+            e.preventDefault(); 
+            const start = this.selectionStart;
+            const end = this.selectionEnd;
+            const text = this.value;
+            
+            if (start !== end) {
+                // Text is selected! Wrap it in parentheses.
+                const selectedText = text.substring(start, end);
+                this.value = text.substring(0, start) + '(' + selectedText + ')' + text.substring(end);
+                
+                this.selectionStart = start + 1;
+                this.selectionEnd = end + 1;
+            } else {
+                // No selection. Check the next character.
+                const nextChar = text[start];
+                
+                const shouldAutoClose = !nextChar || /[\s)]/.test(nextChar);
+                
+                if (shouldAutoClose) {
+                    this.value = text.substring(0, start) + '()' + text.substring(end);
+                    this.selectionStart = this.selectionEnd = start + 1;
+                } else {
+                    this.value = text.substring(0, start) + '(' + text.substring(end);
+                    this.selectionStart = this.selectionEnd = start + 1;
+                }
+            }
+            
+            updateEditor(); 
+        }
+    });
+
+    // Sync scrolling (if the expression gets really long)
+    textarea.addEventListener('scroll', () => {
+        highlightLayer.scrollLeft = textarea.scrollLeft;
+    });
+
+    // Update highlights every time the user types
+    textarea.addEventListener("input", updateEditor);
+    
+    // Initialize empty state
+    updateEditor();
+});
