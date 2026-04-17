@@ -191,6 +191,7 @@ function addDefinition() {
     }
 
     globalDefinitions[name] = expr;
+    invalidateGlobalsCache();
 
     document.getElementById('global-input').value = '';
     listDefinitions();
@@ -465,7 +466,7 @@ function expandSimpleSyntax(input, forDisplay = false, depth = 0) {
         if (expandedDef && forDisplay) {
             try {
                 const termObj = parse(expandedDef);
-                const beautifulTerm = toHTML(termObj, null, null, depth);
+                const beautifulTerm = toHTML(termObj, null, null, depth, true, false);
                 return `<span class="highlight-expanded-group">` +
                             `<span class="expanded-origin">${origin}</span>` +
                             `<span class="expanded-term">${beautifulTerm}</span>` +
@@ -514,16 +515,18 @@ function showExpanded() {
 
 
 function getD3TreeData(term) {
+    let nodeData = { name: 'Unknown' };
+
     if (term instanceof Variable) {
-        return { name: term.name, type: 'variable' };
+        nodeData = { name: term.name, type: 'variable' };
     } else if (term instanceof Expression) {
-        return { 
+        nodeData = { 
             name: `λ${term.variable.name}`, 
             type: 'lambda',
             children: [ getD3TreeData(term.body) ]
         };
     } else if (term instanceof Application) {
-        return { 
+        nodeData = { 
             name: '@', 
             type: 'application',
             children: [ 
@@ -532,7 +535,13 @@ function getD3TreeData(term) {
             ]
         };
     }
-    return { name: 'Unknown' };
+
+    const alias = getAlias(term);
+    if (alias !== null) {
+        nodeData.alias = alias;
+    }
+
+    return nodeData;
 }
 
 function drawD3Tree(treeData, containerId) {
@@ -541,45 +550,25 @@ function drawD3Tree(treeData, containerId) {
 
     const width = container.node().getBoundingClientRect().width || 800;
     const height = 500;
-    const margin = {top: 40, right: 90, bottom: 50, left: 90};
+
+    const zoom = d3.zoom().on("zoom", (event) => {
+        svgGroup.attr("transform", event.transform);
+        
+        const scale = event.transform.k;
+        const adjustedFontSize = Math.max(14, 14 / scale); 
+        svgGroup.selectAll('.enclosure-label').style('font-size', `${adjustedFontSize}px`);
+    });
 
     const svg = container.append("svg")
         .attr("width", width)
         .attr("height", height)
-        .call(d3.zoom().on("zoom", (event) => {
-            svgGroup.attr("transform", event.transform);
-        }))
-        .append("g")
-        .attr("transform", `translate(${width / 2},${margin.top})`); 
+        .call(zoom);
 
-    const svgGroup = svg; 
+    const svgGroup = svg.append("g"); 
 
-    const treemap = d3.tree().nodeSize([60, 80]); 
-
-    let root = d3.hierarchy(treeData, d => d.children);
-    root.x0 = 0;
-    root.y0 = 0;
-
-    const treeDataCalculated = treemap(root);
-    const nodes = treeDataCalculated.descendants();
-    const links = treeDataCalculated.descendants().slice(1);
-
-    svgGroup.selectAll(".link")
-        .data(links)
-        .enter().append("path")
-        .attr("class", "tree-link")
-        .attr("d", d => {
-            return `M${d.x},${d.y}
-                    C${d.x},${(d.y + d.parent.y) / 2}
-                     ${d.parent.x},${(d.y + d.parent.y) / 2}
-                     ${d.parent.x},${d.parent.y}`;
-        });
-
-    const node = svgGroup.selectAll(".node")
-        .data(nodes)
-        .enter().append("g")
-        .attr("class", d => `tree-node tree-node-${d.data.type}`)
-        .attr("transform", d => `translate(${d.x},${d.y})`);
+    const enclosureLayer = svgGroup.append("g").attr("class", "layer-enclosures");
+    const linkLayer = svgGroup.append("g").attr("class", "layer-links");
+    const nodeLayer = svgGroup.append("g").attr("class", "layer-nodes");
 
     const defs = svg.append("defs");
     const filter = defs.append("filter").attr("id", "drop-shadow");
@@ -590,14 +579,186 @@ function drawD3Tree(treeData, containerId) {
     merge.append("feMergeNode");
     merge.append("feMergeNode").attr("in", "SourceGraphic");
 
-    node.append("circle")
-        .attr("r", 18)
-        .style("filter", "url(#drop-shadow)");
+    const treemap = d3.tree().nodeSize([60, 80]); 
+    let root = d3.hierarchy(treeData, d => d.children);
+    root.x0 = width / 2;
+    root.y0 = 0;
 
-    node.append("text")
-        .attr("dy", ".35em")
-        .attr("text-anchor", "middle")
-        .text(d => d.data.name);
+    let i = 0; 
+
+    function update(source) {
+        const treeDataCalculated = treemap(root);
+        const nodes = treeDataCalculated.descendants();
+        const links = treeDataCalculated.descendants().slice(1);
+
+
+        const aliasRoots = nodes.filter(d => d.data.alias)
+                                .sort((a, b) => b.descendants().length - a.descendants().length);
+
+        const enclosure = enclosureLayer.selectAll('g.enclosure')
+            .data(aliasRoots, d => d.id || (d.id = ++i));
+
+        const enclosureEnter = enclosure.enter().append('g')
+            .attr('class', 'enclosure')
+            .style("opacity", 1e-6);
+
+        enclosureEnter.append('rect')
+            .attr('rx', 12)
+            .attr('ry', 12)
+            .style('fill', 'rgba(155, 89, 182, 0.06)') 
+            .style('stroke', 'rgba(155, 89, 182, 0.5)')
+            .style('stroke-dasharray', '6,4')
+            .style('stroke-width', '2px');
+
+        enclosureEnter.append('text')
+            .attr('class', 'enclosure-label')
+            .attr('text-anchor', 'left')
+            .style('fill', '#ebebeb')
+            .style('font-family', 'monospace')
+            .style('font-weight', 'bold')
+            .style('font-size', '14px')
+
+            .style('paint-order', 'stroke fill')
+            .style('stroke', '#8f38a5') 
+            .style('stroke-width', '10px')
+            .style('stroke-linecap', 'round')
+            .style('stroke-linejoin', 'round')
+            .text(d => d.data.alias);
+
+        const enclosureUpdate = enclosureEnter.merge(enclosure);
+        
+        enclosureUpdate.each(function(d) {
+            const desc = d.descendants(); 
+            const padding = 35; 
+            
+            const minX = d3.min(desc, n => n.x) - padding;
+            const maxX = d3.max(desc, n => n.x) + padding;
+            const minY = d3.min(desc, n => n.y) - padding;
+            const maxY = d3.max(desc, n => n.y) + padding;
+
+            const g = d3.select(this);
+            g.transition().duration(400).style("opacity", 1);
+            
+            g.select('rect')
+                .transition().duration(400)
+                .attr('x', minX)
+                .attr('y', minY)
+                .attr('width', maxX - minX)
+                .attr('height', maxY - minY);
+
+            g.select('text')
+                .transition().duration(400)
+                .attr('x', minX + 5)
+                .attr('y', minY - 6); 
+        });
+
+        enclosure.exit()
+            .transition().duration(400)
+            .style("opacity", 1e-6)
+            .remove();
+
+        const link = linkLayer.selectAll('path.tree-link')
+            .data(links, d => d.id || (d.id = ++i));
+
+        const linkEnter = link.enter().append('path')
+            .attr("class", "tree-link")
+            .attr('d', d => {
+                const o = {x: source.x0, y: source.y0};
+                return diagonal(o, o);
+            });
+
+        const linkUpdate = linkEnter.merge(link);
+        linkUpdate.transition().duration(400)
+            .attr('d', d => diagonal(d, d.parent));
+
+        const linkExit = link.exit().transition().duration(400)
+            .attr('d', d => {
+                const o = {x: source.x, y: source.y};
+                return diagonal(o, o);
+            }).remove();
+
+        const node = nodeLayer.selectAll('g.tree-node')
+            .data(nodes, d => d.id || (d.id = ++i));
+
+        const nodeEnter = node.enter().append('g')
+            .attr("class", d => `tree-node tree-node-${d.data.type}`)
+            .attr("transform", d => `translate(${source.x0},${source.y0})`)
+            .on('click', (event, d) => click(event, d)); 
+
+        nodeEnter.append("circle")
+            .attr("r", 1e-6)
+            .style("filter", "url(#drop-shadow)");
+
+        nodeEnter.append("text")
+            .attr("dy", ".35em")
+            .attr("text-anchor", "middle")
+            .text(d => d.data.name)
+            .style("fill-opacity", 1e-6);
+
+        const nodeUpdate = nodeEnter.merge(node);
+        nodeUpdate.transition().duration(400)
+            .attr("transform", d => `translate(${d.x},${d.y})`);
+
+        nodeUpdate.select('circle')
+            .attr('r', 18)
+            .style("stroke-width", d => d._children ? "4.5px" : "2.5px");
+
+        nodeUpdate.select('text').style("fill-opacity", 1);
+
+        const nodeExit = node.exit().transition().duration(400)
+            .attr("transform", d => `translate(${source.x},${source.y})`)
+            .remove();
+
+        nodeExit.select('circle').attr('r', 1e-6);
+        nodeExit.select('text').style('fill-opacity', 1e-6);
+
+        nodes.forEach(d => {
+            d.x0 = d.x;
+            d.y0 = d.y;
+        });
+
+        fitToScreen(root, width, height, zoom, svg);
+    }
+
+    function diagonal(s, d) {
+        return `M ${s.x} ${s.y} C ${s.x} ${(s.y + d.y) / 2}, ${d.x} ${(s.y + d.y) / 2}, ${d.x} ${d.y}`;
+    }
+
+    function click(event, d) {
+        if (d.children) {
+            d._children = d.children;
+            d.children = null;
+        } else {
+            d.children = d._children;
+            d._children = null;
+        }
+        update(d);
+    }
+
+    update(root);
+}
+
+function fitToScreen(root, width, height, zoom, svg) {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    root.each(d => {
+        if (d.x < x0) x0 = d.x;
+        if (d.x > x1) x1 = d.x;
+        if (d.y < y0) y0 = d.y;
+        if (d.y > y1) y1 = d.y;
+    });
+
+    const padding = 60; 
+    const treeWidth = (x1 - x0) + padding * 2;
+    const treeHeight = (y1 - y0) + padding * 2;
+    const scale = Math.min(width / treeWidth, height / treeHeight, 1.2);
+    
+    const translateX = (width / 2) - ((x0 + x1) / 2) * scale;
+    const translateY = (height / 2) - ((y0 + y1) / 2) * scale;
+
+    svg.transition().duration(400).call(
+        zoom.transform, 
+        d3.zoomIdentity.translate(translateX, translateY).scale(scale)
+    );
 }
 
 function showSyntaxTree() {
@@ -816,14 +977,6 @@ function evaluateExpression() {
         const resultContainer = document.createElement('div');
         resultContainer.className = 'final-result-container'; 
 
-        const decimalValue = churchToNum(finalTerm);
-        if (decimalValue !== null) {
-            const badge = document.createElement('div');
-            badge.className = 'decimal-badge';
-            badge.innerHTML = `<strong>${decimalValue}</strong>`;
-            resultContainer.appendChild(badge);
-        }
-
         const resultDiv = document.createElement('div');
         resultDiv.className = 'final-result';
         resultDiv.innerHTML = toHTML(finalTerm, null, null, 0, false); 
@@ -940,7 +1093,61 @@ function findNextRedex(term) {
     return null;
 }
 
-function toHTML(term, targetRedex = null, boundVarToHighlight = null, depth = 0, showChanged = true) {
+function isAlphaEquivalent(t1, t2, env1 = [], env2 = []) {
+    if (t1 instanceof Variable && t2 instanceof Variable) {
+        const i1 = env1.indexOf(t1.name);
+        const i2 = env2.indexOf(t2.name);
+        if (i1 === -1 && i2 === -1) return t1.name === t2.name; // Free variables must match
+        return i1 === i2;
+    }
+    if (t1 instanceof Expression && t2 instanceof Expression) {
+        return isAlphaEquivalent(t1.body, t2.body, [t1.variable.name, ...env1], [t2.variable.name, ...env2]);
+    }
+    if (t1 instanceof Application && t2 instanceof Application) {
+        return isAlphaEquivalent(t1.function, t2.function, env1, env2) && 
+               isAlphaEquivalent(t1.argument, t2.argument, env1, env2);
+    }
+    return false;
+}
+
+let parsedGlobalsCache = null;
+
+function invalidateGlobalsCache() {
+    parsedGlobalsCache = null;
+}
+
+function getParsedGlobals() {
+    if (!parsedGlobalsCache) {
+        parsedGlobalsCache = {};
+        for (const [name, expr] of Object.entries(globalDefinitions)) {
+            try {
+                const expanded = expandSimpleSyntax(expr, false); 
+                parsedGlobalsCache[name] = parse(expanded);
+            } catch(e) {}
+        }
+    }
+    return parsedGlobalsCache;
+}
+
+function findGlobalAlias(term) {
+    const globals = getParsedGlobals();
+    for (const [name, globalAST] of Object.entries(globals)) {
+        if (isAlphaEquivalent(term, globalAST)) return name;
+    }
+    return null;
+}
+
+function getAlias(term) {
+    const num = churchToNum(term);
+    if (num !== null) return num;
+    
+    const globalAlias = findGlobalAlias(term);
+    if (globalAlias) return globalAlias;
+    
+    return null;
+}
+
+function toHTML(term, targetRedex = null, boundVarToHighlight = null, depth = 0, showChanged = true, enableTooltip = true) {
     const levelClass = `bracket-level-${depth % 5}`;
     let resultHTML = "";
 
@@ -955,6 +1162,13 @@ function toHTML(term, targetRedex = null, boundVarToHighlight = null, depth = 0,
         let funcHtml = `<span class="${levelClass}">(</span>λ${paramHtml}.${bodyHtml}<span class="${levelClass}">)</span>`;
         if (func._isNew && showChanged) {
             funcHtml = `<span class="highlight-changed">${funcHtml}</span>`;
+        }
+
+        if (enableTooltip) {
+            const funcAlias = getAlias(func);
+            if (funcAlias !== null) {
+                funcHtml = `<span class="custom-tooltip" data-tooltip="${funcAlias}">${funcHtml}</span>`;
+            }
         }
 
         const argHtmlInner = toHTML(arg, null, null, depth + 1, showChanged); 
@@ -984,6 +1198,13 @@ function toHTML(term, targetRedex = null, boundVarToHighlight = null, depth = 0,
 
     if (term._isNew && showChanged) {
         return `<span class="highlight-changed">${resultHTML}</span>`;
+    }
+
+    if (enableTooltip) {
+        const alias = getAlias(term);
+        if (alias !== null) {
+            resultHTML = `<span class="custom-tooltip" data-tooltip="${alias}">${resultHTML}</span>`;
+        }
     }
     
     return resultHTML;
@@ -1129,19 +1350,17 @@ document.addEventListener("DOMContentLoaded", () => {
             text = updatedText;
         }
 
-        // --- RAINBOW BRACKET PRE-PASS ---
         const parenInfo = new Array(text.length).fill(null);
         const stack = [];
         
         for (let j = 0; j < text.length; j++) {
             if (text[j] === '(') {
-                // Store depth BEFORE pushing (starts at 0)
                 parenInfo[j] = { status: 'ok', depth: stack.length };
                 stack.push(j);
             } else if (text[j] === ')') {
                 if (stack.length > 0) {
                     stack.pop();
-                    // Depth is the size of the stack AFTER popping to match the pair
+                    
                     parenInfo[j] = { status: 'ok', depth: stack.length };
                 } else {
                     parenInfo[j] = { status: 'error', depth: 0 };
@@ -1152,7 +1371,6 @@ document.addEventListener("DOMContentLoaded", () => {
             parenInfo[stack.pop()].status = 'error';
         }
 
-        // 2. Generate HTML
         let html = '';
         let i = 0;
         while (i < text.length) {
