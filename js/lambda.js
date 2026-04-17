@@ -22,7 +22,7 @@ let globalDefinitions = {
     'car': 'λp.(p (λx.λy.x))',
     'cdr': 'λp.(p (λx.λy.y))',
     'nil': 'λc.λn.n',
-} 
+}
 
 function highlightLambdaSyntax(text, isDark = false) {
     const parenInfo = new Array(text.length).fill(null);
@@ -89,6 +89,9 @@ function highlightLambdaSyntax(text, isDark = false) {
         }
         i++;
     }
+
+    if (text.endsWith('\n')) html += '<br>';
+
     return html;
 }
 
@@ -134,7 +137,17 @@ function listDefinitions() {
     };
 
     textarea.addEventListener('keydown', function(e) {
-        if (e.key === '(') {
+        if (e.key === 'Tab') {
+            e.preventDefault(); 
+            const start = this.selectionStart;
+            const end = this.selectionEnd;
+            
+            this.value = this.value.substring(0, start) + '\t' + this.value.substring(end);
+            
+            this.selectionStart = this.selectionEnd = start + 1;
+            updateGlobalEditor(); 
+        } 
+        else if (e.key === '(') {
             e.preventDefault(); 
             const start = this.selectionStart;
             const end = this.selectionEnd;
@@ -162,12 +175,10 @@ function listDefinitions() {
     });
 
     textarea.addEventListener("input", updateGlobalEditor);
-    textarea.addEventListener('scroll', () => {
-        highlightLayer.scrollTop = textarea.scrollTop;
-        highlightLayer.scrollLeft = textarea.scrollLeft;
-    });
 
     updateGlobalEditor();
+
+    attachAdvancedEditorFeatures('global-input', 'global-highlight-layer');
 }
 
 function addDefinition() {
@@ -1002,8 +1013,101 @@ function toDisplayFormat(term, highlights = {}, isIntermediateParameter = false)
     }
 }
 
-// --- INLINE SYNTAX HIGHLIGHTER & AUTO-PARENTHESES ---
+function attachAdvancedEditorFeatures(textareaId, highlightLayerId) {
+    const textarea = document.getElementById(textareaId);
+    const highlightLayer = document.getElementById(highlightLayerId);
+    if (!textarea || !highlightLayer) return;
 
+    textarea.style.tabSize = '4';
+    highlightLayer.style.tabSize = '4';
+
+    const wrapper = textarea.parentElement;
+
+    let lineNumbers = wrapper.querySelector('.line-numbers-gutter');
+    if (!lineNumbers) {
+        lineNumbers = document.createElement('div');
+        lineNumbers.className = 'line-numbers-gutter';
+        
+        lineNumbers.style.cssText = `
+            grid-area: 1/1;
+            width: 35px;
+            padding: 10px 0;
+            text-align: center;
+            color: #888;
+            border-right: 1px solid #ddd;
+            background: transparent;
+            font-family: monospace;
+            font-size: 16px;
+            line-height: 20px;
+            user-select: none;
+            pointer-events: none;
+            z-index: 3;
+            overflow: hidden;
+            box-sizing: border-box;
+            display: none;
+        `;
+        wrapper.insertBefore(lineNumbers, highlightLayer);
+    }
+
+    const syncScroll = () => {
+        // Force all layers to perfectly mirror the textarea's scroll position
+        if (lineNumbers) lineNumbers.scrollTop = textarea.scrollTop;
+        if (highlightLayer) {
+            highlightLayer.scrollTop = textarea.scrollTop;
+            highlightLayer.scrollLeft = textarea.scrollLeft;
+        }
+    };
+
+    const updateFeatures = () => {
+        // 1. Cache the current scroll position so we don't lose it
+        const currentScrollTop = textarea.scrollTop;
+        const currentScrollLeft = textarea.scrollLeft;
+
+        // 2. Briefly shrink to calculate true scrollHeight
+        textarea.style.height = '45px'; 
+        
+        const maxHeight = 160;
+        const scrollH = textarea.scrollHeight;
+        const newHeight = Math.min(Math.max(scrollH, 45), maxHeight);
+        
+        // 3. Apply the new height
+        textarea.style.height = newHeight + 'px';
+        highlightLayer.style.height = newHeight + 'px';
+        lineNumbers.style.height = newHeight + 'px';
+        
+        textarea.style.overflowY = scrollH > maxHeight ? 'auto' : 'hidden';
+
+        // 4. Line Numbers Logic
+        const lines = textarea.value.split('\n').length;
+        if (lines > 1) {
+            lineNumbers.style.display = 'block';
+            textarea.style.paddingLeft = '45px';
+            highlightLayer.style.paddingLeft = '45px';
+            
+            let numbersHtml = '';
+            for (let l = 1; l <= lines; l++) {
+                numbersHtml += l + '<br>';
+            }
+            lineNumbers.innerHTML = numbersHtml;
+        } else {
+            lineNumbers.style.display = 'none';
+            textarea.style.paddingLeft = '10px';
+            highlightLayer.style.paddingLeft = '10px';
+        }
+        
+        // 5. Restore the cached scroll positions and sync!
+        textarea.scrollTop = currentScrollTop;
+        textarea.scrollLeft = currentScrollLeft;
+        syncScroll();
+    };
+
+    textarea.addEventListener('input', updateFeatures);
+    
+    // Centralized scroll sync listener
+    textarea.addEventListener('scroll', syncScroll);
+
+    setTimeout(updateFeatures, 0);
+}
 document.addEventListener("DOMContentLoaded", () => {
     const textarea = document.getElementById('input');
     const highlightLayer = document.getElementById('highlight-layer');
@@ -1071,9 +1175,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 while (i < text.length && /\d/.test(text[i])) { num += text[i]; i++; }
                 html += `<span class="syntax-number">${num}</span>`;
                 i--; 
-            } else if (/[a-zA-Z_]/.test(c) && c !== 'λ') {
+            } else if (/[a-zA-Z_+\-&|*/<>=!?]/.test(c) && c !== 'λ') {
                 let word = '';
-                while (i < text.length && /[a-zA-Z_0-9]/.test(text[i]) && text[i] !== 'λ') { word += text[i]; i++; }
+                while (i < text.length && /[a-zA-Z_0-9+\-&|*/<>=!?]/.test(text[i]) && text[i] !== 'λ') { word += text[i]; i++; }
                 const cls = globalDefinitions[word] ? "syntax-global" : "syntax-variable";
                 html += `<span class="${cls}">${word}</span>`;
                 i--; 
@@ -1089,23 +1193,27 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     textarea.addEventListener('keydown', function(e) {
-        if (e.key === '(') {
+        if (e.key === 'Tab') {
+            e.preventDefault(); 
+            const start = this.selectionStart;
+            const end = this.selectionEnd;
+            this.value = this.value.substring(0, start) + '\t' + this.value.substring(end);
+            this.selectionStart = this.selectionEnd = start + 1;
+            updateEditor(); 
+        } 
+        else if (e.key === '(') {
             e.preventDefault(); 
             const start = this.selectionStart;
             const end = this.selectionEnd;
             const text = this.value;
             
             if (start !== end) {
-                // Text is selected! Wrap it in parentheses.
                 const selectedText = text.substring(start, end);
                 this.value = text.substring(0, start) + '(' + selectedText + ')' + text.substring(end);
-                
                 this.selectionStart = start + 1;
                 this.selectionEnd = end + 1;
             } else {
-                // No selection. Check the next character.
                 const nextChar = text[start];
-                
                 const shouldAutoClose = !nextChar || /[\s)]/.test(nextChar);
                 
                 if (shouldAutoClose) {
@@ -1116,19 +1224,14 @@ document.addEventListener("DOMContentLoaded", () => {
                     this.selectionStart = this.selectionEnd = start + 1;
                 }
             }
-            
             updateEditor(); 
         }
     });
 
-    // Sync scrolling (if the expression gets really long)
-    textarea.addEventListener('scroll', () => {
-        highlightLayer.scrollLeft = textarea.scrollLeft;
-    });
-
-    // Update highlights every time the user types
     textarea.addEventListener("input", updateEditor);
     
-    // Initialize empty state
     updateEditor();
+
+    attachAdvancedEditorFeatures('input', 'highlight-layer');
 });
+
